@@ -35,12 +35,13 @@ else:
 marketInfo = public_api_client.get_market(pair_name)
 if marketInfo['orderBookState'] != 'Open':
     raise ValueError('Invalid trade pair.')
-unitPrice = marketInfo['filters']['price']['tickSize']
-unitQuantity = marketInfo['filters']['quantity']['stepSize']
+unitPrice = float(marketInfo['filters']['price']['tickSize'])
+unitQuantity = float(marketInfo['filters']['quantity']['stepSize'])
 if unitPrice > priceStep:
     raise ValueError(f'Grid price step should be greater than the minimum price: {unitPrice}.')
-if unitQuantity > min(initialBuyQuantity, buyIncrement, initialSellQuantity, sellIncrement):
-    raise ValueError(f'All quantity related params should be greater the minimum quantity: {unitQuantity}.')
+for each in [initialBuyQuantity, buyIncrement, initialSellQuantity, sellIncrement]:
+    if (each > 0) and (each < unitQuantity):
+        raise ValueError(f'All quantity related params should be greater the minimum quantity: {unitQuantity}.')
 
 # 初始化Backpack API客户端
 load_dotenv()
