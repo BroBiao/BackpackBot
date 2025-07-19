@@ -61,7 +61,8 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # 辅助变量
-grid_orders = []  # 记录程序挂的单，防止手动订单干扰程序执行
+cancelled_orders = []
+cancelled_orders_lock = asyncio.Lock()
 trade_side_trans = {'SPOT': {'Bid': 'BUY', 'Ask': 'SELL'}, 'PERP': {'Bid': 'LONG', 'Ask': 'SHORT'}}
 
 def send_message(message):
@@ -121,14 +122,13 @@ def place_order(side, price, quantity):
         send_message(f"挂单失败!\nside: {side} price: {format_price(price)} quantity: {format_decimal(quantity, unitQuantity)}\n{traceback.format_exc()}")
         return None
 
-def update_orders(last_trade_side, last_trade_qty, last_trade_price):
+async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
     """检查并更新买卖挂单，保持每侧 3 个挂单"""
-
-    # 清空挂单记录
-    grid_orders.clear()
 
     # 取消当前挂单
     open_orders = auth_api_client.get_open_orders(symbol=pair_name, marketType=marketType)
+    async with cancelled_orders_lock:
+        cancelled_orders += [each['id'] for each in open_orders]
     while open_orders:
         auth_api_client.cancel_open_orders(symbol=pair_name)
         time.sleep(1)
@@ -174,7 +174,6 @@ def update_orders(last_trade_side, last_trade_qty, last_trade_price):
         order = place_order('Bid', buy_price, buy_qty)
         if order:
             print(f'在{format_decimal(buy_price, unitPrice)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
-            grid_orders.append(order['id'])
             if marketType == 'SPOT':
                 quote_balance -= (buy_price * buy_qty)
             else:
@@ -202,7 +201,6 @@ def update_orders(last_trade_side, last_trade_qty, last_trade_price):
         order = place_order('Ask', sell_price, sell_qty)
         if order:
             print(f'在{format_decimal(sell_price, unitPrice)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
-            grid_orders.append(order['id'])
             if marketType == 'SPOT':
                 base_balance -= sell_qty
             else:
@@ -217,7 +215,7 @@ async def start_listen():
     last_trade_qty = float(last_trade[0]['quantity']) if last_trade else initialSellQuantity
     last_trade_price = (float(last_trade[0]['price']) if last_trade else 
         float(public_api_client.get_recent_trades(symbol=pair_name)[0]['price']))
-    update_orders(last_trade_side, last_trade_qty, last_trade_price)
+    asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
     async with websockets.connect(ws_url) as ws:
         signature = get_signature()
         sub_msg = json.dumps({"method": "SUBSCRIBE", "params": [f"account.orderUpdate.{pair_name}"], "signature": signature})
@@ -226,20 +224,24 @@ async def start_listen():
             try:
                 response = await ws.recv()
                 data = json.loads(response)['data']
-                if data['i'] in grid_orders:
                     if data['X'] == 'Filled':
                         last_trade_side = data['S']
                         last_trade_qty = float(data['q'])
                         last_trade_price = float(data['p'])
                         send_message(f"{trade_side_trans[marketType][last_trade_side]} {last_trade_qty}{baseAsset} at {last_trade_price}")
-                        update_orders(last_trade_side, last_trade_qty, last_trade_price)
+                        asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
                     elif data['e'] == 'orderCancelled':
-                        last_trade = auth_api_client.get_fill_history(symbol=pair_name, marketType=marketType)
-                        last_trade_side = last_trade[0]['side'] if last_trade else 'Ask'
-                        last_trade_qty = float(last_trade[0]['quantity']) if last_trade else initialSellQuantity
-                        last_trade_price = (float(last_trade[0]['price']) if last_trade else 
-                            float(public_api_client.get_recent_trades(symbol=pair_name)[0]['price']))
-                        update_orders(last_trade_side, last_trade_qty, last_trade_price)
+                        if data['i'] in cancelled_orders:
+                            async with cancelled_orders_lock:
+                                cancelled_orders.remove(data['i'])
+                            continue
+                        else:
+                            last_trade = auth_api_client.get_fill_history(symbol=pair_name, marketType=marketType)
+                            last_trade_side = last_trade[0]['side'] if last_trade else 'Ask'
+                            last_trade_qty = float(last_trade[0]['quantity']) if last_trade else initialSellQuantity
+                            last_trade_price = (float(last_trade[0]['price']) if last_trade else 
+                                float(public_api_client.get_recent_trades(symbol=pair_name)[0]['price']))
+                            asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
                     else:
                         pass
                 else:
