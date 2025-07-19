@@ -71,9 +71,14 @@ def send_message(message):
     # if not dryRun:
     #     loop.run_until_complete(bot.send_message(chat_id=chat_id, text=message))
 
-def format_decimal(raw_number, unit_size):
-    """将价格/数量格式化为符合标准的小数位数"""
-    return float(raw_number) // float(unit_size) * float(unit_size)
+def format_price(price):
+    """价格抹零，格式化为priceStep的整数倍，并确保小数位数满足要求"""
+    price = float(price) // priceStep * priceStep
+    return float(price) // unitPrice * unitPrice
+
+def format_quantitiy(quantity):
+    """确保订单交易数量小数位数满足要求"""
+    return float(quantity) // unitQuantity * unitQuantity
 
 def get_balance():
     """获取资产余额"""
@@ -104,13 +109,13 @@ def place_order(side, price, quantity):
             symbol=pair_name,
             side=side,
             orderType='Limit',
-            price=format_decimal(price, unitPrice),
-            quantity=format_decimal(quantity, unitQuantity),
+            price=format_price(price),
+            quantity=format_quantitiy(quantity),
             timeInForce='GTC'
         )
         return order
     except Exception as e:
-        send_message(f"挂单失败!\n{str(e)}\n{traceback.format_exc()}")
+        send_message(f"挂单失败!\nside: {side} price: {price} quantity: {quantity}\n{traceback.format_exc()}")
         return None
 
 def update_orders(last_trade_side, last_trade_qty, last_trade_price):
@@ -146,8 +151,8 @@ def update_orders(last_trade_side, last_trade_qty, last_trade_price):
 
     # 买单：往下挂 priceStep 整数倍的价格
     for i in range(numOrders):
-        buy_price = format_decimal((last_trade_price - (i + 1) * priceStep), unitPrice)
-        buy_qty = format_decimal((initial_buy_qty + i * buyIncrement), unitQuantity)
+        buy_price = format_price((last_trade_price - (i + 1) * priceStep))
+        buy_qty = format_quantitiy((initial_buy_qty + i * buyIncrement))
         if marketType == 'SPOT':
             if quote_balance < buy_price * buy_qty:
                 send_message(f"{quoteAsset}余额: {quote_balance}，无法在{buy_price}买入{buy_qty}{baseAsset}")
@@ -170,8 +175,8 @@ def update_orders(last_trade_side, last_trade_qty, last_trade_price):
 
     # 卖单：往上挂 priceStep 整数倍的价格
     for i in range(numOrders):
-        sell_price = format_decimal((last_trade_price + (i + 1) * priceStep), unitPrice)
-        sell_qty = format_decimal((initial_sell_qty + i * sellIncrement), unitQuantity)
+        sell_price = format_price((last_trade_price + (i + 1) * priceStep))
+        sell_qty = format_quantitiy((initial_sell_qty + i * sellIncrement))
         if marketType == 'SPOT':
             if base_balance < sell_qty:
                 send_message(f"{baseAsset}余额: {base_balance}，无法在{sell_price}卖出{sell_qty}{baseAsset}")
@@ -209,7 +214,7 @@ async def start_listen():
         while True:
             try:
                 response = await ws.recv()
-                data = json.loads(response)
+                data = json.loads(response)['data']
                 if data['i'] in grid_orders:
                     if data['X'] == 'Filled':
                         last_trade_side = data['S']
@@ -233,7 +238,7 @@ async def start_listen():
                 await asyncio.sleep(3)
                 break
             except Exception as e:
-                send_message(f"一般错误: {e}")
+                send_message(f"一般错误: \n{str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(3)
 
 def main():
