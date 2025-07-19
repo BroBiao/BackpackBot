@@ -10,7 +10,7 @@ from api.Auth_api import AuthAPI
 from api.utils import sign
 
 
-use_proxy = True
+use_proxy = False
 if use_proxy == True:
     proxy = 'http://127.0.0.1:7890'
 else:
@@ -29,7 +29,7 @@ initialBuyQuantity=0.01
 buyIncrement=0.0
 initialSellQuantity=0.01
 sellIncrement=0.0
-priceStep = 0.5
+priceStep = 0.1
 baseAsset = 'SOL'
 quoteAsset = 'USDC'
 numOrders = 3
@@ -61,7 +61,7 @@ asyncio.set_event_loop(loop)
 
 # 辅助变量
 grid_orders = []  # 记录程序挂的单，防止手动订单干扰程序执行
-trade_side_trans = {'Bid': 'BUY', 'Ask': 'SELL'}
+trade_side_trans = {'SPOT': {'Bid': 'BUY', 'Ask': 'SELL'}, 'PERP': {'Bid': 'LONG', 'Ask': 'SHORT'}}
 
 def send_message(message):
     '''
@@ -215,6 +215,7 @@ async def start_listen():
                         last_trade_side = data['S']
                         last_trade_qty = float(data['q'])
                         last_trade_price = float(data['p'])
+                        send_message(f"{trade_side_trans[marketType][last_trade_side]} {last_trade_qty}{baseAsset} at {last_trade_price}")
                         update_orders(last_trade_side, last_trade_qty, last_trade_price)
                     elif data['e'] == 'orderCancelled':
                         last_trade = auth_api_client.get_fill_history(symbol=pair_name, marketType=marketType)
