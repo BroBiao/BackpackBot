@@ -4,7 +4,7 @@ import json
 import asyncio
 import traceback
 import websockets
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_HALF_UP
 from dotenv import load_dotenv
 from api.Public_api import PublicAPI
 from api.Auth_api import AuthAPI
@@ -77,12 +77,13 @@ def format_decimal(value, unit_value):
     """统一浮点数小数位数"""
     value = Decimal(str(value))
     unit_value = Decimal(str(unit_value))
-    return str(value.quantize(unit_value, rounding=ROUND_DOWN))
+    return str(value.quantize(unit_value, rounding=ROUND_HALF_UP))
 
 def format_price(price):
     """价格抹零，格式化为priceStep的整数倍，并确保小数位数满足要求"""
-    price = (price // priceStep) * priceStep
-    return format_decimal(price, unitPrice)
+    price = Decimal(format_decimal(price, unitPrice))
+    price = (price // Decimal(str(priceStep)) * Decimal(str(priceStep)))
+    return str(price)
 
 def get_balance():
     """获取资产余额"""
@@ -124,6 +125,8 @@ def place_order(side, price, quantity):
 
 async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
     """检查并更新买卖挂单，保持每侧 3 个挂单"""
+
+    global cancelled_orders
 
     # 取消当前挂单
     open_orders = auth_api_client.get_open_orders(symbol=pair_name, marketType=marketType)
@@ -207,6 +210,7 @@ async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
                 free_equity -= (sell_price * sell_qty * leverage_factor)
 
 async def start_listen():
+    global cancelled_orders
     # 取消当前挂单
     auth_api_client.cancel_open_orders(symbol=pair_name)
     # 获取最近成交记录
@@ -224,26 +228,24 @@ async def start_listen():
             try:
                 response = await ws.recv()
                 data = json.loads(response)['data']
-                    if data['X'] == 'Filled':
-                        last_trade_side = data['S']
-                        last_trade_qty = float(data['q'])
-                        last_trade_price = float(data['p'])
-                        send_message(f"{trade_side_trans[marketType][last_trade_side]} {last_trade_qty}{baseAsset} at {last_trade_price}")
-                        asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
-                    elif data['e'] == 'orderCancelled':
-                        if data['i'] in cancelled_orders:
-                            async with cancelled_orders_lock:
-                                cancelled_orders.remove(data['i'])
-                            continue
-                        else:
-                            last_trade = auth_api_client.get_fill_history(symbol=pair_name, marketType=marketType)
-                            last_trade_side = last_trade[0]['side'] if last_trade else 'Ask'
-                            last_trade_qty = float(last_trade[0]['quantity']) if last_trade else initialSellQuantity
-                            last_trade_price = (float(last_trade[0]['price']) if last_trade else 
-                                float(public_api_client.get_recent_trades(symbol=pair_name)[0]['price']))
-                            asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
+                if data['X'] == 'Filled':
+                    last_trade_side = data['S']
+                    last_trade_qty = float(data['q'])
+                    last_trade_price = float(data['p'])
+                    send_message(f"{trade_side_trans[marketType][last_trade_side]} {last_trade_qty}{baseAsset} at {last_trade_price}")
+                    asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
+                elif data['e'] == 'orderCancelled':
+                    if data['i'] in cancelled_orders:
+                        async with cancelled_orders_lock:
+                            cancelled_orders.remove(data['i'])
+                        continue
                     else:
-                        pass
+                        last_trade = auth_api_client.get_fill_history(symbol=pair_name, marketType=marketType)
+                        last_trade_side = last_trade[0]['side'] if last_trade else 'Ask'
+                        last_trade_qty = float(last_trade[0]['quantity']) if last_trade else initialSellQuantity
+                        last_trade_price = (float(last_trade[0]['price']) if last_trade else 
+                            float(public_api_client.get_recent_trades(symbol=pair_name)[0]['price']))
+                        asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
                 else:
                     continue
             except websockets.ConnectionClosed:
