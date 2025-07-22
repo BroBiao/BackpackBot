@@ -3,7 +3,9 @@ import time
 import json
 import asyncio
 import traceback
+import threading
 import websockets
+import concurrent.futures
 from decimal import Decimal, ROUND_HALF_UP
 from dotenv import load_dotenv
 from api.Public_api import PublicAPI
@@ -60,18 +62,32 @@ for each in [initialBuyQuantity, buyIncrement, initialSellQuantity, sellIncremen
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-# 辅助变量
+# 全局变量
+task_queue = asyncio.Queue()
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 cancelled_orders = []
-cancelled_orders_lock = asyncio.Lock()
+cancelled_orders_lock = threading.Lock()
 trade_side_trans = {'SPOT': {'Bid': 'BUY', 'Ask': 'SELL'}, 'PERP': {'Bid': 'LONG', 'Ask': 'SHORT'}}
 
-async def send_message(message):
-    '''
-    发送信息到Telegram
-    '''
+async def task_consumer():
+    """任务消费者，按顺序执行队列中的任务"""
+    while True:
+        func, args, kwargs = await task_queue.get()
+        
+        # 在线程池中执行同步函数
+        await loop.run_in_executor(executor, func, *args, **kwargs)
+        
+        task_queue.task_done()
+
+def add_task(func, *args, **kwargs):
+    """添加任务到队列（非阻塞）"""
+    task_queue.put_nowait((func, args, kwargs))
+
+def send_message(message):
+    """发送信息到Telegram"""
     print(message)  # 输出到日志
     # if not dryRun:
-    #     await bot.send_message(chat_id=chat_id, text=message)
+    #     loop.run_until_complete(bot.send_message(chat_id=chat_id, text=message))
 
 def format_decimal(value, unit_value):
     """统一浮点数小数位数"""
@@ -101,13 +117,14 @@ def get_balance():
     return balance
 
 def get_signature():
+    """生成Websocket连接所需签名"""
     ts_ms = str(int((time.time())*1000))
     str_to_sign = f'instruction=subscribe&timestamp={ts_ms}&window=5000'
     signature = sign(str_to_sign, api_secret)
     signature_list = [api_key, signature, ts_ms, "5000"]
     return signature_list
 
-async def place_order(side, price, quantity):
+def place_order(side, price, quantity):
     """挂单函数"""
     try:
         order = auth_api_client.place_order(
@@ -120,17 +137,17 @@ async def place_order(side, price, quantity):
         )
         return order
     except Exception as e:
-        await send_message(f"挂单失败!\nside: {side} price: {format_price(price)} quantity: {format_decimal(quantity, unitQuantity)}\n{traceback.format_exc()}")
+        send_message(f"挂单失败!\nside: {side} price: {format_price(price)} quantity: {format_decimal(quantity, unitQuantity)}\n{traceback.format_exc()}")
         return None
 
-async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
+def update_orders(last_trade_side, last_trade_qty, last_trade_price):
     """检查并更新买卖挂单，保持每侧 3 个挂单"""
 
     global cancelled_orders
 
     # 取消当前挂单
     open_orders = auth_api_client.get_open_orders(symbol=pair_name, marketType=marketType)
-    async with cancelled_orders_lock:
+    with cancelled_orders_lock:
         cancelled_orders += [each['id'] for each in open_orders]
     while open_orders:
         auth_api_client.cancel_open_orders(symbol=pair_name)
@@ -163,18 +180,18 @@ async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
             if quote_balance < buy_price * buy_qty:
                 warn_msg = (f'{quoteAsset}余额: {format_decimal(quote_balance, unitPrice)}，'
                     f'无法在{format_price(buy_price)}买入{format_decimal(buy_qty, unitQuantity)}{baseAsset}')
-                await send_message(warn_msg)
+                send_message(warn_msg)
                 break
         else:
             if free_equity < (buy_price * buy_qty * leverage_factor):
                 warn_msg = (f'保证金余额: {format_decimal(free_equity, unitPrice)}USD，'
                     f'无法在{format_price(buy_price)}做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}')
-                await send_message(warn_msg)
+                send_message(warn_msg)
                 break
         if dryRun:
             print(f'在{format_price(buy_price)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
             continue
-        order = await place_order('Bid', buy_price, buy_qty)
+        order = place_order('Bid', buy_price, buy_qty)
         if order:
             print(f'在{format_price(buy_price)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
             if marketType == 'SPOT':
@@ -190,18 +207,18 @@ async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
             if base_balance < sell_qty:
                 warn_msg = (f'{baseAsset}余额: {format_decimal(base_balance, unitPrice)}，'
                     f'无法在{format_price(sell_price)}卖出{format_decimal(sell_qty, unitQuantity)}{baseAsset}')
-                await send_message(warn_msg)
+                send_message(warn_msg)
                 break
         else:
             if free_equity < (sell_price * sell_qty * leverage_factor):
                 warn_msg = (f'保证金余额: {format_decimal(free_equity, unitPrice)}USD，'
                     f'无法在{format_price(sell_price)}做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}')
-                await send_message(warn_msg)
+                send_message(warn_msg)
                 break
         if dryRun:
             print(f'在{format_price(sell_price)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
             continue
-        order = await place_order('Ask', sell_price, sell_qty)
+        order = place_order('Ask', sell_price, sell_qty)
         if order:
             print(f'在{format_price(sell_price)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
             if marketType == 'SPOT':
@@ -211,6 +228,8 @@ async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
 
 async def start_listen():
     global cancelled_orders
+    # 启动任务消费者
+    asyncio.create_task(task_consumer())
     # 取消当前挂单
     auth_api_client.cancel_open_orders(symbol=pair_name)
     # 获取最近成交记录
@@ -223,7 +242,7 @@ async def start_listen():
         signature = get_signature()
         sub_msg = json.dumps({"method": "SUBSCRIBE", "params": [f"account.orderUpdate.{pair_name}"], "signature": signature})
         await ws.send(sub_msg)
-        asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
+        add_task(update_orders, last_trade_side, last_trade_qty, last_trade_price)
         while True:
             try:
                 response = await ws.recv()
@@ -232,28 +251,29 @@ async def start_listen():
                     last_trade_side = data['S']
                     last_trade_qty = float(data['q'])
                     last_trade_price = float(data['p'])
-                    send_message(f"{trade_side_trans[marketType][last_trade_side]} {last_trade_qty}{baseAsset} at {last_trade_price}")
-                    asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
+                    fill_msg = f"{trade_side_trans[marketType][last_trade_side]} {last_trade_qty}{baseAsset} at {last_trade_price}"
+                    add_task(send_message, fill_msg)
+                    add_task(update_orders, last_trade_side, last_trade_qty, last_trade_price)
                 elif data['e'] == 'orderCancelled':
-                    if data['i'] in cancelled_orders:
-                        async with cancelled_orders_lock:
+                    with cancelled_orders_lock:
+                        if data['i'] in cancelled_orders:
                             cancelled_orders.remove(data['i'])
-                        continue
-                    else:
-                        last_trade = auth_api_client.get_fill_history(symbol=pair_name, marketType=marketType)
-                        last_trade_side = last_trade[0]['side'] if last_trade else 'Ask'
-                        last_trade_qty = float(last_trade[0]['quantity']) if last_trade else initialSellQuantity
-                        last_trade_price = (float(last_trade[0]['price']) if last_trade else 
-                            float(public_api_client.get_recent_trades(symbol=pair_name)[0]['price']))
-                        asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
+                            continue
+                        else:
+                            last_trade = auth_api_client.get_fill_history(symbol=pair_name, marketType=marketType)
+                            last_trade_side = last_trade[0]['side'] if last_trade else 'Ask'
+                            last_trade_qty = float(last_trade[0]['quantity']) if last_trade else initialSellQuantity
+                            last_trade_price = (float(last_trade[0]['price']) if last_trade else 
+                                float(public_api_client.get_recent_trades(symbol=pair_name)[0]['price']))
+                            add_task(update_orders, last_trade_side, last_trade_qty, last_trade_price)
                 else:
                     continue
             except websockets.ConnectionClosed:
-                await send_message("连接中断，尝试重连...")
+                send_message("连接中断，尝试重连...")
                 await asyncio.sleep(3)
                 break
             except Exception as e:
-                await send_message(f"一般错误: \n{str(e)}\n{traceback.format_exc()}")
+                send_message(f"一般错误: \n{str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(3)
 
 def main():
@@ -261,7 +281,7 @@ def main():
         try:
             loop.run_until_complete(start_listen())
         except Exception as e:
-            loop.run_unitl_complete(send_message(f"一般错误: {e}"))
+            send_message(f"一般错误: {e}")
             continue
 
 if __name__ == "__main__":
