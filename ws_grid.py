@@ -65,13 +65,13 @@ cancelled_orders = []
 cancelled_orders_lock = asyncio.Lock()
 trade_side_trans = {'SPOT': {'Bid': 'BUY', 'Ask': 'SELL'}, 'PERP': {'Bid': 'LONG', 'Ask': 'SHORT'}}
 
-def send_message(message):
+async def send_message(message):
     '''
     发送信息到Telegram
     '''
     print(message)  # 输出到日志
     # if not dryRun:
-    #     loop.run_until_complete(bot.send_message(chat_id=chat_id, text=message))
+    #     await bot.send_message(chat_id=chat_id, text=message)
 
 def format_decimal(value, unit_value):
     """统一浮点数小数位数"""
@@ -107,7 +107,7 @@ def get_signature():
     signature_list = [api_key, signature, ts_ms, "5000"]
     return signature_list
 
-def place_order(side, price, quantity):
+async def place_order(side, price, quantity):
     """挂单函数"""
     try:
         order = auth_api_client.place_order(
@@ -120,7 +120,7 @@ def place_order(side, price, quantity):
         )
         return order
     except Exception as e:
-        send_message(f"挂单失败!\nside: {side} price: {format_price(price)} quantity: {format_decimal(quantity, unitQuantity)}\n{traceback.format_exc()}")
+        await send_message(f"挂单失败!\nside: {side} price: {format_price(price)} quantity: {format_decimal(quantity, unitQuantity)}\n{traceback.format_exc()}")
         return None
 
 async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
@@ -162,21 +162,21 @@ async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
         if marketType == 'SPOT':
             if quote_balance < buy_price * buy_qty:
                 warn_msg = (f'{quoteAsset}余额: {format_decimal(quote_balance, unitPrice)}，'
-                    f'无法在{format_decimal(buy_price, unitPrice)}买入{format_decimal(buy_qty, unitQuantity)}{baseAsset}')
-                send_message(warn_msg)
+                    f'无法在{format_price(buy_price)}买入{format_decimal(buy_qty, unitQuantity)}{baseAsset}')
+                await send_message(warn_msg)
                 break
         else:
             if free_equity < (buy_price * buy_qty * leverage_factor):
                 warn_msg = (f'保证金余额: {format_decimal(free_equity, unitPrice)}USD，'
-                    f'无法在{format_decimal(buy_price, unitPrice)}做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}')
-                send_message(warn_msg)
+                    f'无法在{format_price(buy_price)}做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}')
+                await send_message(warn_msg)
                 break
         if dryRun:
-            print(f'在{format_decimal(buy_price, unitPrice)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
+            print(f'在{format_price(buy_price)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
             continue
-        order = place_order('Bid', buy_price, buy_qty)
+        order = await place_order('Bid', buy_price, buy_qty)
         if order:
-            print(f'在{format_decimal(buy_price, unitPrice)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
+            print(f'在{format_price(buy_price)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
             if marketType == 'SPOT':
                 quote_balance -= (buy_price * buy_qty)
             else:
@@ -189,21 +189,21 @@ async def update_orders(last_trade_side, last_trade_qty, last_trade_price):
         if marketType == 'SPOT':
             if base_balance < sell_qty:
                 warn_msg = (f'{baseAsset}余额: {format_decimal(base_balance, unitPrice)}，'
-                    f'无法在{format_decimal(sell_price, unitPrice)}卖出{format_decimal(sell_qty, unitQuantity)}{baseAsset}')
-                send_message(warn_msg)
+                    f'无法在{format_price(sell_price)}卖出{format_decimal(sell_qty, unitQuantity)}{baseAsset}')
+                await send_message(warn_msg)
                 break
         else:
             if free_equity < (sell_price * sell_qty * leverage_factor):
                 warn_msg = (f'保证金余额: {format_decimal(free_equity, unitPrice)}USD，'
-                    f'无法在{format_decimal(sell_price, unitPrice)}做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}')
-                send_message(warn_msg)
+                    f'无法在{format_price(sell_price)}做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}')
+                await send_message(warn_msg)
                 break
         if dryRun:
-            print(f'在{format_decimal(sell_price, unitPrice)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
+            print(f'在{format_price(sell_price)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
             continue
-        order = place_order('Ask', sell_price, sell_qty)
+        order = await place_order('Ask', sell_price, sell_qty)
         if order:
-            print(f'在{format_decimal(sell_price, unitPrice)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
+            print(f'在{format_price(sell_price)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
             if marketType == 'SPOT':
                 base_balance -= sell_qty
             else:
@@ -219,11 +219,11 @@ async def start_listen():
     last_trade_qty = float(last_trade[0]['quantity']) if last_trade else initialSellQuantity
     last_trade_price = (float(last_trade[0]['price']) if last_trade else 
         float(public_api_client.get_recent_trades(symbol=pair_name)[0]['price']))
-    asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
     async with websockets.connect(ws_url) as ws:
         signature = get_signature()
         sub_msg = json.dumps({"method": "SUBSCRIBE", "params": [f"account.orderUpdate.{pair_name}"], "signature": signature})
         await ws.send(sub_msg)
+        asyncio.create_task(update_orders(last_trade_side, last_trade_qty, last_trade_price))
         while True:
             try:
                 response = await ws.recv()
@@ -249,11 +249,11 @@ async def start_listen():
                 else:
                     continue
             except websockets.ConnectionClosed:
-                send_message("连接中断，尝试重连...")
+                await send_message("连接中断，尝试重连...")
                 await asyncio.sleep(3)
                 break
             except Exception as e:
-                send_message(f"一般错误: \n{str(e)}\n{traceback.format_exc()}")
+                await send_message(f"一般错误: \n{str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(3)
 
 def main():
@@ -261,7 +261,7 @@ def main():
         try:
             loop.run_until_complete(start_listen())
         except Exception as e:
-            send_message(f"一般错误: {e}")
+            loop.run_unitl_complete(send_message(f"一般错误: {e}"))
             continue
 
 if __name__ == "__main__":
