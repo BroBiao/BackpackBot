@@ -51,8 +51,9 @@ unitPrice = Decimal(marketInfo['filters']['price']['tickSize'])
 unitQuantity = Decimal(marketInfo['filters']['quantity']['stepSize'])
 if unitPrice > priceStep:
     raise ValueError(f'Grid price step should be greater than the minimum price: {unitPrice}.')
-if min([initialBuyQuantity, initialSellQuantity]) < unitQuantity:
-    raise ValueError(f'Trade quantity should be greater the minimum quantity: {unitQuantity}.')
+for each in [initialBuyQuantity, buyIncrement, initialSellQuantity, sellIncrement]:
+    if (each > 0) and (each < unitQuantity):
+        raise ValueError(f'All quantity related params should be greater the minimum quantity: {unitQuantity}.')
 
 # 初始化Telegram Bot
 # bot_token = os.getenv('BOT_TOKEN')
@@ -100,6 +101,12 @@ def format_price(price):
     price = (price // Decimal(str(priceStep)) * Decimal(str(priceStep)))
     return str(price)
 
+def format_qty(quantity):
+    """交易数量格式化，确保交易数量符合API要求"""
+    quantity = Decimal(format_decimal(quantity, unitQuantity))
+    quantity = (quantity // Decimal(str(unitQuantity)) * Decimal(str(unitQuantity)))
+    return quantity
+
 def get_balance():
     """获取资产余额"""
     balance = {baseAsset: {'free': 0.0, 'locked': 0.0}, quoteAsset: {'free': 0.0, 'locked': 0.0}}
@@ -133,12 +140,12 @@ def place_order(side, price, quantity):
             side=side,
             orderType='Limit',
             price=format_price(price),
-            quantity=format_decimal(quantity, unitQuantity),
+            quantity=format_qty(quantity),
             timeInForce='GTC'
         )
         return order
     except Exception as e:
-        send_message(f"挂单失败!\nside: {side} price: {format_price(price)} quantity: {format_decimal(quantity, unitQuantity)}\n{traceback.format_exc()}")
+        send_message(f"挂单失败!\nside: {side} price: {price} quantity: {quantity}\n{traceback.format_exc()}")
         return None
 
 def update_orders(last_trade_side, last_trade_qty, last_trade_price):
@@ -180,21 +187,21 @@ def update_orders(last_trade_side, last_trade_qty, last_trade_price):
         if marketType == 'SPOT':
             if quote_balance < buy_price * buy_qty:
                 warn_msg = (f'{quoteAsset}余额: {format_decimal(quote_balance, unitPrice)}，'
-                    f'无法在{format_price(buy_price)}买入{format_decimal(buy_qty, unitQuantity)}{baseAsset}')
+                    f'无法在{format_price(buy_price)}买入{format_qty(buy_qty)}{baseAsset}')
                 send_message(warn_msg)
                 break
         else:
             if free_equity < (buy_price * buy_qty * leverage_factor):
                 warn_msg = (f'保证金余额: {format_decimal(free_equity, unitPrice)}USD，'
-                    f'无法在{format_price(buy_price)}做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}')
+                    f'无法在{format_price(buy_price)}做多{format_qty(buy_qty)}{baseAsset}')
                 send_message(warn_msg)
                 break
         if dryRun:
-            print(f'在{format_price(buy_price)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
+            print(f'在{format_price(buy_price)}买入/做多{format_qty(buy_qty)}{baseAsset}挂单成功')
             continue
         order = place_order('Bid', buy_price, buy_qty)
         if order:
-            print(f'在{format_price(buy_price)}买入/做多{format_decimal(buy_qty, unitQuantity)}{baseAsset}挂单成功')
+            print(f'在{format_price(buy_price)}买入/做多{format_qty(buy_qty)}{baseAsset}挂单成功')
             if marketType == 'SPOT':
                 quote_balance -= (buy_price * buy_qty)
             else:
@@ -207,21 +214,21 @@ def update_orders(last_trade_side, last_trade_qty, last_trade_price):
         if marketType == 'SPOT':
             if base_balance < sell_qty:
                 warn_msg = (f'{baseAsset}余额: {format_decimal(base_balance, unitPrice)}，'
-                    f'无法在{format_price(sell_price)}卖出{format_decimal(sell_qty, unitQuantity)}{baseAsset}')
+                    f'无法在{format_price(sell_price)}卖出{format_qty(sell_qty)}{baseAsset}')
                 send_message(warn_msg)
                 break
         else:
             if free_equity < (sell_price * sell_qty * leverage_factor):
                 warn_msg = (f'保证金余额: {format_decimal(free_equity, unitPrice)}USD，'
-                    f'无法在{format_price(sell_price)}做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}')
+                    f'无法在{format_price(sell_price)}做空{format_qty(sell_qty)}{baseAsset}')
                 send_message(warn_msg)
                 break
         if dryRun:
-            print(f'在{format_price(sell_price)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
+            print(f'在{format_price(sell_price)}卖出/做空{format_qty(sell_qty)}{baseAsset}挂单成功')
             continue
         order = place_order('Ask', sell_price, sell_qty)
         if order:
-            print(f'在{format_price(sell_price)}卖出/做空{format_decimal(sell_qty, unitQuantity)}{baseAsset}挂单成功')
+            print(f'在{format_price(sell_price)}卖出/做空{format_qty(sell_qty)}{baseAsset}挂单成功')
             if marketType == 'SPOT':
                 base_balance -= sell_qty
             else:
