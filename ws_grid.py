@@ -2,6 +2,7 @@ import os
 import time
 import json
 import asyncio
+import telegram
 import traceback
 import threading
 import websockets
@@ -13,18 +14,12 @@ from api.Auth_api import AuthAPI
 from api.utils import sign
 
 
-use_proxy = False
-if use_proxy == True:
-    proxy = 'http://127.0.0.1:7890'
-else:
-    proxy = None
-
 # 初始化Backpack API客户端
 load_dotenv()
 api_key = os.getenv('API_KEY')
 api_secret = os.getenv('API_SECRET')
-public_api_client = PublicAPI(proxy=proxy)
-auth_api_client = AuthAPI(api_key=api_key, api_secret=api_secret, proxy=proxy)
+public_api_client = PublicAPI()
+auth_api_client = AuthAPI(api_key=api_key, api_secret=api_secret)
 ws_url = 'wss://ws.backpack.exchange'
 
 # 配置参数
@@ -56,9 +51,9 @@ for each in [initialBuyQuantity, buyIncrement, initialSellQuantity, sellIncremen
         raise ValueError(f'All quantity related params should be greater the minimum quantity: {unitQuantity}.')
 
 # 初始化Telegram Bot
-# bot_token = os.getenv('BOT_TOKEN')
-# chat_id = os.getenv('CHAT_ID')
-# bot = telegram.Bot(bot_token)
+bot_token = os.getenv('BOT_TOKEN')
+chat_id = os.getenv('CHAT_ID')
+bot = telegram.Bot(bot_token)
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
@@ -86,8 +81,8 @@ def add_task(func, *args, **kwargs):
 def send_message(message):
     """发送信息到Telegram"""
     print(message)  # 输出到日志
-    # if not dryRun:
-    #     loop.run_until_complete(bot.send_message(chat_id=chat_id, text=message))
+    if not dryRun:
+        asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=chat_id, text=message), loop)
 
 def format_decimal(value, unit_value):
     """统一浮点数小数位数"""
@@ -105,7 +100,7 @@ def format_qty(quantity):
     """交易数量格式化，确保交易数量符合API要求"""
     quantity = Decimal(format_decimal(quantity, unitQuantity))
     quantity = (quantity // Decimal(str(unitQuantity)) * Decimal(str(unitQuantity)))
-    return quantity
+    return str(quantity)
 
 def get_balance():
     """获取资产余额"""
