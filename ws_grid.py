@@ -51,9 +51,8 @@ unitPrice = Decimal(marketInfo['filters']['price']['tickSize'])
 unitQuantity = Decimal(marketInfo['filters']['quantity']['stepSize'])
 if unitPrice > priceStep:
     raise ValueError(f'Grid price step should be greater than the minimum price: {unitPrice}.')
-for each in [initialBuyQuantity, buyIncrement, initialSellQuantity, sellIncrement]:
-    if (each > 0) and (each < unitQuantity):
-        raise ValueError(f'All quantity related params should be greater the minimum quantity: {unitQuantity}.')
+if min([initialBuyQuantity, initialSellQuantity]) < unitQuantity:
+    raise ValueError(f'Trade quantity should be greater the minimum quantity: {unitQuantity}.')
 
 # 初始化Telegram Bot
 # bot_token = os.getenv('BOT_TOKEN')
@@ -103,7 +102,7 @@ def format_price(price):
 
 def get_balance():
     """获取资产余额"""
-    balance = {}
+    balance = {baseAsset: {'free': 0.0, 'locked': 0.0}, quoteAsset: {'free': 0.0, 'locked': 0.0}}
     raw_collaterals = auth_api_client.get_collaterals()['collateral']
     collaterals = {}
     for each in raw_collaterals:
@@ -111,7 +110,9 @@ def get_balance():
         collaterals[symbol] = float(each['lendQuantity'])
     balances = auth_api_client.get_balances()
     for each in [baseAsset, quoteAsset]:
-        balance[each] = {'free': float(balances[each]['available']), 'locked': float(balances[each]['locked'])}
+        if each in balances.keys():
+            balance[each]['free'] = float(balances[each]['available'])
+            balance[each]['locked'] = float(balances[each]['locked'])
         if each in collaterals.keys():
             balance[each]['free'] += collaterals[each]
     return balance
