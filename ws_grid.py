@@ -23,16 +23,16 @@ auth_api_client = AuthAPI(api_key=api_key, api_secret=api_secret)
 ws_url = 'wss://ws.backpack.exchange'
 
 # 配置参数
-initialBuyQuantity=0.01
+initialBuyQuantity=0.2
 buyIncrement=0.0
-initialSellQuantity=0.01
+initialSellQuantity=0.2
 sellIncrement=0.0
-priceStep = 0.1
-baseAsset = 'SOL'
+priceStep = 5.0
+baseAsset = 'TAO'
 quoteAsset = 'USDC'
 numOrders = 3
 dryRun = False
-marketType = 'SPOT'
+marketType = 'PERP'
 if marketType == 'SPOT':
     pair_name = baseAsset + '_' + quoteAsset
 elif marketType == 'PERP':
@@ -60,8 +60,9 @@ asyncio.set_event_loop(loop)
 # 全局变量
 task_queue = asyncio.Queue()
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-cancelled_orders = []
+cancelled_orders = []  # 记录程序本身取消的订单号，防止触发订单取消事件进入死循环
 cancelled_orders_lock = threading.Lock()
+filled_orders = []  # 记录成交的订单号，防止websocket重复发送消息导致重复挂单
 trade_side_trans = {'SPOT': {'Bid': 'BUY', 'Ask': 'SELL'}, 'PERP': {'Bid': 'LONG', 'Ask': 'SHORT'}}
 
 async def task_consumer():
@@ -230,7 +231,7 @@ def update_orders(last_trade_side, last_trade_qty, last_trade_price):
                 free_equity -= (sell_price * sell_qty * leverage_factor)
 
 async def start_listen():
-    global cancelled_orders
+    global cancelled_orders, filled_orders
     # 启动任务消费者
     asyncio.create_task(task_consumer())
     # 取消当前挂单
@@ -251,17 +252,24 @@ async def start_listen():
                 response = await ws.recv()
                 data = json.loads(response)['data']
                 if data['X'] == 'Filled':
-                    last_trade_side = data['S']
-                    last_trade_qty = float(data['q'])
-                    last_trade_price = float(data['p'])
-                    fill_msg = f"{trade_side_trans[marketType][last_trade_side]} {last_trade_qty}{baseAsset} at {last_trade_price}"
-                    add_task(send_message, fill_msg)
-                    add_task(update_orders, last_trade_side, last_trade_qty, last_trade_price)
+                    # 新的成交订单
+                    if data['i'] not in filled_orders:
+                        last_trade_side = data['S']
+                        last_trade_qty = float(data['q'])
+                        last_trade_price = float(data['p'])
+                        fill_msg = f"{trade_side_trans[marketType][last_trade_side]} {last_trade_qty}{baseAsset} at {last_trade_price}"
+                        add_task(send_message, fill_msg)
+                        add_task(update_orders, last_trade_side, last_trade_qty, last_trade_price)
+                        filled_orders.append(data['i'])
+                    # 已处理的成交订单(websocket服务器重复发送)
+                    else:
+                        continue
                 elif data['e'] == 'orderCancelled':
                     with cancelled_orders_lock:
+                        # 程序本身更新订单时取消的订单，不处理
                         if data['i'] in cancelled_orders:
-                            cancelled_orders.remove(data['i'])
                             continue
+                        # 人为取消的订单，重新挂单补上
                         else:
                             last_trade = auth_api_client.get_fill_history(symbol=pair_name, marketType=marketType)
                             last_trade_side = last_trade[0]['side'] if last_trade else 'Ask'
