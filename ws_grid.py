@@ -24,7 +24,7 @@ ws_url = 'wss://ws.backpack.exchange'
 
 # 配置参数
 initialBuyQuantity=0.2
-buyIncrement=0.0
+buyIncrement=0.01
 initialSellQuantity=0.2
 sellIncrement=0.0
 priceStep = 5.0
@@ -232,8 +232,6 @@ def update_orders(last_trade_side, last_trade_qty, last_trade_price):
 
 async def start_listen():
     global cancelled_orders, filled_orders
-    # 启动任务消费者
-    asyncio.create_task(task_consumer())
     # 取消当前挂单
     auth_api_client.cancel_open_orders(symbol=pair_name)
     # 获取最近成交记录
@@ -281,18 +279,27 @@ async def start_listen():
                     continue
             except websockets.ConnectionClosed:
                 send_message("连接中断，尝试重连...")
-                await asyncio.sleep(3)
-                break
+                # 抛出异常，让外层主函数统一处理等待和重试
+                raise
             except Exception as e:
-                send_message(f"一般错误: \n{str(e)}\n{traceback.format_exc()}")
-                await asyncio.sleep(3)
+                raise
 
 def main():
+    retry_count = 0
+    # 启动任务消费者
+    loop.create_task(task_consumer())
     while True:
         try:
             loop.run_until_complete(start_listen())
+            retry_count = 0
+        except KeyboardInterrupt:
+            send_message("程序被用户中断")
+            break
         except Exception as e:
-            send_message(f"一般错误: {e}")
+            retry_count += 1
+            delay = min(2 ** retry_count, 600)  # 指数增长，最大600秒
+            send_message(f"程序错误，{delay}秒后重试 (第{retry_count}次): {e}")
+            time.sleep(delay)
             continue
 
 if __name__ == "__main__":
